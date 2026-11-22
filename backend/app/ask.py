@@ -152,8 +152,8 @@ def _resolve(engine: TrustEngine, question: str) -> dict:
     fresh = next((c for c in ts.components if c.key == "freshness"), None)
     explanation = (
         f"{top.name} is {cert_phrase}, owned by {top.team or 'an unassigned team'}. "
-        f"It scores {ts.score:.0f}: {', '.join(c.evidence[0].lower() for c in ts.components if c.key in ('lineage', 'usage'))}"
-        f"{'; ' + fresh.evidence[0].lower() if fresh else ''}. "
+        f"It scores {ts.score:.0f}: {', '.join(_lc(c.evidence[0]) for c in ts.components if c.key in ('lineage', 'usage'))}"
+        f"{'; ' + _lc(fresh.evidence[0]) if fresh else ''}. "
         f"{len(rivals)} other definition(s) of {g.term} are in use; prefer {top.name} for reporting."
     )
     facts = {
@@ -179,6 +179,10 @@ def _resolve(engine: TrustEngine, question: str) -> dict:
         "citations": [top.id, *(n for n in [top.data_product_id] if n), *conflict_ids],
         "facts": facts,
     }
+
+
+def _lc(text: str) -> str:
+    return text[:1].lower() + text[1:]
 
 
 def _difference(engine: TrustEngine, ref, other) -> str:

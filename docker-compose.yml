@@ -1,0 +1,50 @@
+services:
+  neo4j:
+    image: neo4j:5.24-community
+    environment:
+      NEO4J_AUTH: neo4j/decisiontrust
+      NEO4J_PLUGINS: '["apoc"]'
+    ports: ["7474:7474", "7687:7687"]
+    volumes: [neo4j_data:/data]
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p decisiontrust 'RETURN 1' || exit 1"]
+      interval: 10s
+      retries: 10
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: dt
+      POSTGRES_PASSWORD: dt
+      POSTGRES_DB: decision_trust
+    ports: ["5432:5432"]
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./infra/postgres/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+
+  api:
+    build: ./backend
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: decisiontrust
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DT_DEMO_NOW: ${DT_DEMO_NOW:-2026-11-22T10:00:00Z}
+      DT_CORS_ORIGINS: http://localhost:3000
+    volumes:
+      - ./infra:/infra:ro
+    ports: ["8000:8000"]
+    depends_on:
+      neo4j: { condition: service_healthy }
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    ports: ["3000:3000"]
+    depends_on: [api]
+
+volumes:
+  neo4j_data:
+  pg_data:
