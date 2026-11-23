@@ -31,6 +31,10 @@ class Metric:
     last_refreshed: datetime | None
     formula_hash: str = ""
     formula_tokens: set[str] = field(default_factory=set)
+    time_basis: str | None = None      # invoice_date, order_date, close_date ...
+    calendar: str | None = None        # fiscal | calendar
+    currency: str | None = None
+    hierarchy_version: str | None = None
 
 
 @dataclass
@@ -70,6 +74,15 @@ class Recommendation:
     accepted_90d: int
     success_90d: int
     rule_violations: list[str]
+
+
+@dataclass
+class Incident:
+    date: str
+    metric_id: str
+    type: str  # restated | exec_dispute | wrong_decision
+    severity: str
+    note: str
 
 
 @dataclass

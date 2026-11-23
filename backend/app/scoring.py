@@ -173,7 +173,8 @@ def _age(hours: float) -> str:
 # ---------------------------------------------------------------- MTS
 
 def score_metric(store: Store, m: Metric, conflicts: list[Conflict], now: datetime,
-                 on_cycle: list[str] | None = None) -> TrustScore:
+                 on_cycle: list[str] | None = None, weights: dict[str, float] | None = None,
+                 version: str = MTS_VERSION) -> TrustScore:
     comps = [
         definition_consistency(store, m),
         ownership_clarity(store, m),
@@ -181,6 +182,9 @@ def score_metric(store: Store, m: Metric, conflicts: list[Conflict], now: dateti
         usage_consistency(store, m),
         freshness(m, now),
     ]
+    if weights:
+        for c in comps:
+            c.weight = weights[c.key]
     base = sum(c.weighted for c in comps)
     penalties: list[dict] = []
     definition_penalised = False
@@ -198,7 +202,7 @@ def score_metric(store: Store, m: Metric, conflicts: list[Conflict], now: dateti
         penalties.append({"conflict_id": c.id, "code": c.code, "severity": c.severity, "points": -pts})
     total_pen = min(PENALTY_CAP, sum(-p["points"] for p in penalties))
     score = round(clamp(base - total_pen), 1)
-    return TrustScore("metric", m.id, score, zone_for(score), comps, penalties, MTS_VERSION)
+    return TrustScore("metric", m.id, score, zone_for(score), comps, penalties, version)
 
 
 # ---------------------------------------------------------------- RTS

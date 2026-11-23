@@ -14,7 +14,7 @@ from datetime import datetime
 from . import conflicts as conflict_rules
 from .graph import build_graph, find_cycles, lineage_paths, metrics_on_cycles, neighbourhood
 from .models import Conflict, TrustScore
-from .scoring import score_metric, score_recommendation
+from .scoring import MTS_VERSION, MTS_WEIGHTS, score_metric, score_recommendation
 from .store import Store
 
 
@@ -29,6 +29,8 @@ class TrustEngine:
         self.explainer = explainer  # optional LLM explainer: (TrustScore, name) -> str
         self._lock = threading.RLock()
         self._conflict_status: dict[str, tuple[str, str | None]] = {}
+        self.weights: dict[str, float] = dict(MTS_WEIGHTS)
+        self.scoring_version = MTS_VERSION
         self.conflicts: list[Conflict] = []
         self.metric_scores: dict[str, TrustScore] = {}
         self.rec_scores: dict[str, TrustScore] = {}
@@ -49,7 +51,7 @@ class TrustEngine:
             cycles = find_cycles(self.store)
             on_cycle = metrics_on_cycles(self.store, cycles)
             self.metric_scores = {
-                m.id: score_metric(self.store, m, found, now, on_cycle.get(m.id))
+                m.id: score_metric(self.store, m, found, now, on_cycle.get(m.id), self.weights, self.scoring_version)
                 for m in self.store.metrics.values()
             }
             mts = {k: v.score for k, v in self.metric_scores.items()}
@@ -205,6 +207,43 @@ class TrustEngine:
             self._audit(actor, "log_outcome", rec_id, None, {"accepted": accepted, "success": success})
             self.recompute()
             return score_dict(self.rec_scores[rec_id], self.store)
+
+    def set_weights(self, weights: dict[str, float] | None, actor: str) -> dict:
+        with self._lock:
+            if weights is None:
+                self.weights, self.scoring_version = dict(MTS_WEIGHTS), MTS_VERSION
+            else:
+                if set(weights) != set(MTS_WEIGHTS) or abs(sum(weights.values()) - 1) > 0.01:
+                    raise ActionError("weights must cover all five components and sum to 1")
+                self.weights, self.scoring_version = dict(weights), MTS_VERSION + "-calibrated"
+            self._audit(actor, "set_weights", "mts", None, {"weights": self.weights})
+            return self.recompute()
+
+    def rename_variant(self, metric_id: str, term: str, definition: str, actor: str,
+                       new_name: str | None = None) -> dict:
+        """Give a divergent variant its own business term (e.g. 'Bookings') instead of fighting over 'Revenue'."""
+        from .definition import parse
+        from .extractors.common import snake
+        from .models import GlossaryTerm
+
+        with self._lock:
+            m = self._metric(metric_id)
+            gid = "g_" + snake(term)
+            if gid in self.store.glossary and self.store.glossary[gid].term.lower() != term.lower():
+                raise ActionError(f"Glossary id {gid} is taken")
+            if gid not in self.store.glossary:
+                d = parse(m.formula)
+                required = sorted(t.column for t in d.terms + d.denominator if t.is_simple)
+                self.store.glossary[gid] = GlossaryTerm(gid, term, definition, m.owner_email, required, [term.lower()])
+                self.store.node_names[gid] = ("GlossaryTerm", term)
+            old = m.glossary_term_id
+            m.glossary_term_id = gid
+            if new_name:
+                m.name = new_name
+                self.store.node_names[m.id] = ("Metric", new_name)
+            self._audit(actor, "rename_variant", m.id, None, {"from_term": old, "to_term": gid, "new_name": new_name})
+            self.recompute()
+            return self.metric_detail(m.id)
 
     def _audit(self, actor: str, action: str, entity_id: str, reason: str | None, payload: dict | None = None):
         self.store.audit.append({"actor": actor, "action": action, "entity_id": entity_id,

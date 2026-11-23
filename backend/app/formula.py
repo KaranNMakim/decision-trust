@@ -37,7 +37,14 @@ def normalise(formula: str) -> str:
 
 
 def formula_hash(formula: str) -> str:
-    return hashlib.sha256(normalise(formula).encode()).hexdigest()[:16]
+    """Fingerprint of the parsed structure, so whitespace, brackets and term order don't create false variants."""
+    from .definition import canonical
+
+    try:
+        key = canonical(formula)
+    except Exception:  # noqa: BLE001 - unparseable formulas fall back to text
+        key = normalise(formula)
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
 def glossary_alignment(formula: str, required_components: list[str]) -> float:

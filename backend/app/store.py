@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import formula as fx
-from .models import BusinessRule, Dashboard, GlossaryTerm, LineageEdge, Metric, Recommendation
+from .models import BusinessRule, Dashboard, GlossaryTerm, Incident, LineageEdge, Metric, Recommendation
 
 
 def _blank(v: str | None) -> str | None:
@@ -42,6 +42,12 @@ class Store:
     rules: dict[str, BusinessRule] = field(default_factory=dict)
     node_names: dict[str, tuple[str, str]] = field(default_factory=dict)  # id -> (label, name)
     audit: list[dict] = field(default_factory=list)
+    # Optional numeric context for reconciliation bridges (period -> column -> value)
+    component_values: dict[str, dict[str, float]] = field(default_factory=dict)
+    component_units: dict[str, str] = field(default_factory=dict)
+    filter_impacts: list[dict] = field(default_factory=list)
+    reported_values: list[dict] = field(default_factory=list)
+    incidents: list[Incident] = field(default_factory=list)
 
     # ---------- loading ----------
     @classmethod
@@ -61,6 +67,20 @@ class Store:
         if rules.exists():
             for r in _read(rules):
                 s.rules[r["rule_id"]] = BusinessRule(r["rule_id"], r["name"], r["description"], r["severity"])
+        if (data_dir / "component_values.csv").exists():
+            for r in _read(data_dir / "component_values.csv"):
+                s.component_values.setdefault(r["period"], {})[r["column"].lower()] = float(r["value"])
+                s.component_units[r["period"]] = r.get("unit") or ""
+        if (data_dir / "filter_impacts.csv").exists():
+            for r in _read(data_dir / "filter_impacts.csv"):
+                s.filter_impacts.append({**r, "excluded_value": float(r["excluded_value"])})
+        if (data_dir / "reported_values.csv").exists():
+            for r in _read(data_dir / "reported_values.csv"):
+                s.reported_values.append({**r, "value": float(r["value"])})
+        if (data_dir / "incidents.csv").exists():
+            for r in _read(data_dir / "incidents.csv"):
+                s.incidents.append(Incident(r["date"], r["metric_id"], r["type"], r.get("severity") or "medium",
+                                            r.get("note") or ""))
         return s
 
     def add_glossary(self, r: dict[str, str]) -> None:
@@ -88,6 +108,10 @@ class Store:
             certification=_blank(r.get("certification")) or "none",
             refresh_sla_hours=float(r.get("refresh_sla_h") or 24),
             last_refreshed=_dt(r.get("last_refreshed")),
+            time_basis=_blank(r.get("time_basis")),
+            calendar=_blank(r.get("calendar")),
+            currency=_blank(r.get("currency")),
+            hierarchy_version=_blank(r.get("hierarchy_version")),
         )
         m.formula_hash = fx.formula_hash(m.formula)
         m.formula_tokens = fx.data_tokens(m.formula)

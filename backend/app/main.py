@@ -16,7 +16,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
+from . import exports as exporter
 from .ask import ask as run_ask
+from .calibration import calibrate
+from .extractors import extract_powerbi, extract_tableau
+from .migration import plan as migration_plan
+from .reconcile import reconcile as run_reconcile
 from .config import settings
 from .engine import ActionError, TrustEngine, conflict_dict, score_dict
 from .llm import ClaudeGateway
@@ -176,6 +181,71 @@ def assign_owner(metric_id: str, body: OwnerBody, who: str = Depends(actor)):
     return _act(engine.assign_owner, metric_id, body.owner_email, who)
 
 
+class RenameBody(BaseModel):
+    term: str = Field(..., min_length=2, max_length=80)
+    definition: str = Field(..., min_length=5)
+    new_name: str | None = None
+
+
+@app.post("/api/v1/metrics/{metric_id}/rename-term")
+def rename_term(metric_id: str, body: RenameBody, who: str = Depends(actor)):
+    """Give a divergent variant its own business term (e.g. Bookings) instead of deprecating it."""
+    return _act(engine.rename_variant, metric_id, body.term, body.definition, who, body.new_name)
+
+
+@app.get("/api/v1/metrics/{metric_id}/export")
+def export_metric(metric_id: str, format: Literal["dbt", "databricks"] = "dbt"):
+    _metric_or_404(metric_id)
+    return exporter.export(engine.store, metric_id, format)
+
+
+# ---------------------------------------------------------------- dashboards & reconciliation
+
+@app.get("/api/v1/dashboards")
+def list_dashboards():
+    sm = engine.score_map()
+    return [{"id": d.id, "name": d.name, "tool": d.tool, "audience": d.audience,
+             "monthly_viewers": d.monthly_viewers, "metric_ids": d.metric_ids,
+             "local_overrides": d.local_overrides, "trust_score": sm.get(d.id, {}).get("score"),
+             "zone": sm.get(d.id, {}).get("zone")} for d in engine.store.dashboards.values()]
+
+
+@app.get("/api/v1/reconcile")
+def reconcile(a: str, b: str, dashboard_a: str | None = None, dashboard_b: str | None = None,
+              period: str | None = None):
+    """Why do two numbers disagree? Causes by category plus a numeric bridge when component values exist."""
+    try:
+        return run_reconcile(engine.store, a, b, dashboard_a or None, dashboard_b or None, period)
+    except KeyError as exc:
+        raise problem(404, "Not found", str(exc)) from exc
+    except ValueError as exc:
+        raise problem(422, "Cannot reconcile", str(exc)) from exc
+
+
+# ---------------------------------------------------------------- calibration
+
+@app.get("/api/v1/calibration")
+def calibration():
+    return calibrate(engine)
+
+
+class WeightsBody(BaseModel):
+    weights: dict[str, float] | None = None  # null = reset to defaults
+
+
+@app.post("/api/v1/calibration/apply")
+def apply_weights(body: WeightsBody, who: str = Depends(actor)):
+    weights = body.weights if body.weights is not None else None
+    out = _act(engine.set_weights, weights, who)
+    return {**out, "weights": engine.weights, "scoring_version": engine.scoring_version}
+
+
+@app.get("/api/v1/incidents")
+def incidents():
+    return [{"date": i.date, "metric_id": i.metric_id, "metric": engine.store.name_of(i.metric_id),
+             "type": i.type, "severity": i.severity, "note": i.note} for i in engine.store.incidents]
+
+
 # ---------------------------------------------------------------- recommendations
 
 @app.get("/api/v1/recommendations")
@@ -223,6 +293,14 @@ def list_conflicts(code: str | None = None, status: str | None = "open", severit
 class ConflictPatch(BaseModel):
     status: Literal["open", "resolved", "dismissed"]
     note: str | None = None
+
+
+@app.get("/api/v1/conflicts/{conflict_id}/plan")
+def conflict_plan(conflict_id: str):
+    try:
+        return migration_plan(engine, conflict_id)
+    except KeyError as exc:
+        raise problem(404, "Conflict not found", conflict_id) from exc
 
 
 @app.patch("/api/v1/conflicts/{conflict_id}")
@@ -321,6 +399,36 @@ async def ingest(source_type: Literal["glossary", "metric", "dashboard", "lineag
     store.audit.append({"actor": who, "action": f"ingest_{source_type}", "entity_id": file.filename,
                         "reason": None, "payload": {"rows": ok, "errors": len(errors)}})
     return {"source_type": source_type, "rows_ingested": ok, "errors": errors, **summary}
+
+
+@app.post("/api/v1/extract/{tool}")
+async def extract(tool: Literal["powerbi", "tableau"], file: UploadFile = File(...), commit: bool = False,
+                  dashboard: str | None = None, who: str = Depends(actor)):
+    """Read metric definitions from a Power BI model (.tmdl / model.bim) or Tableau workbook (.twb / .twbx).
+    commit=false returns a preview; commit=true adds them to the workspace and recomputes."""
+    data = await file.read()
+    name = file.filename or tool
+    try:
+        if tool == "powerbi":
+            res = extract_powerbi(data.decode("utf-8-sig"), name, engine.store.glossary, dashboard or name.rsplit(".", 1)[0])
+        else:
+            res = extract_tableau(data, name, engine.store.glossary)
+    except Exception as exc:  # noqa: BLE001
+        raise problem(422, "Could not read file", str(exc)) from exc
+    out = res.to_dict()
+    if commit:
+        for row in res.metrics:
+            engine.store.add_metric(row)
+        for row in res.dashboards:
+            engine.store.add_dashboard(row)
+        out["summary"] = engine.recompute()
+        _sync_graph()
+        engine.store.audit.append({"actor": who, "action": f"extract_{tool}", "entity_id": name, "reason": None,
+                                   "payload": {"metrics": len(res.metrics), "dashboards": len(res.dashboards)}})
+        new_conflicts = [conflict_dict(c) for c in engine.conflicts
+                         if c.status == "open" and any(r["metric_id"] in c.entity_ids for r in res.metrics)]
+        out["new_conflicts"] = new_conflicts
+    return out
 
 
 @app.post("/api/v1/scores/recompute")

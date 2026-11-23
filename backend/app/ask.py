@@ -12,13 +12,15 @@ import uuid
 
 from .engine import TrustEngine, conflict_dict, score_dict
 
-INTENTS = ("resolve_metric", "explain_score", "find_conflicts", "lineage", "recommendation_trust")
+INTENTS = ("resolve_metric", "explain_score", "find_conflicts", "lineage", "recommendation_trust", "reconcile")
 
 
 def classify(question: str) -> str:
     q = question.lower()
     if re.search(r"\brecommend|\bmodel\b|\bsuggest", q):
         return "recommendation_trust"
+    if re.search(r"differ|don'?t match|do not match|mismatch|reconcile|disagree|gap between|\bvs\.?\b|versus|(higher|lower) than", q):
+        return "reconcile"
     if re.search(r"\bwhy\b|\bexplain\b|\blow\b|\bdrop", q):
         return "explain_score"
     if re.search(r"conflict|duplicate|inconsisten|orphan|circular|cycle", q):
@@ -67,6 +69,8 @@ def ask(engine: TrustEngine, question: str, llm=None) -> dict:
 
     if intent == "recommendation_trust":
         body = _recommendation(engine, question)
+    elif intent == "reconcile" and (rb := _reconcile(engine, question)):
+        body = rb
     elif intent == "find_conflicts":
         body = _conflicts(engine, question)
     elif intent == "explain_score" and _match_metric(engine, question):
@@ -94,6 +98,61 @@ def ask(engine: TrustEngine, question: str, llm=None) -> dict:
 
 
 # ---------------------------------------------------------------- intents
+
+def _mentions(question: str, candidates: dict[str, list[str]]) -> list[str]:
+    """Ids whose name variants appear in the question, ordered by first appearance."""
+    q = question.lower()
+    found: dict[str, int] = {}
+    for cid, names in candidates.items():
+        for n in names:
+            i = q.find(n)
+            if n and i >= 0 and (cid not in found or i < found[cid]):
+                found[cid] = i
+    # drop ids whose match is contained in a longer match at the same spot
+    return [cid for cid, _ in sorted(found.items(), key=lambda kv: kv[1])]
+
+
+def _reconcile(engine: TrustEngine, question: str) -> dict | None:
+    from .reconcile import reconcile
+
+    store = engine.store
+    dash_names = {d.id: list({d.name.lower(), d.name.split(" - ")[0].lower().strip()}) for d in store.dashboards.values()}
+    def variants(name: str) -> list[str]:
+        stripped = re.sub(r"\s*\(.*?\)", "", name.lower()).strip()
+        return [name.lower()] + ([stripped] if " " in stripped and stripped != name.lower() else [])
+
+    metric_names = {m.id: variants(m.name) for m in store.metrics.values() if m.certification != "deprecated"}
+    dashes = _mentions(question, dash_names)
+    metrics = [m for m in _mentions(question, metric_names) if len(metric_names[m][0]) > 4]
+    term_id = _match_term(engine, question)
+    pair = None
+    if len(dashes) >= 2:
+        da, db = dashes[:2]
+
+        def pick(did: str) -> str | None:
+            shown = store.dashboards[did].metric_ids
+            for mid in shown:
+                if term_id and store.metrics[mid].glossary_term_id == term_id:
+                    return mid
+            return shown[0] if shown and not term_id else None
+
+        ma, mb = pick(da), pick(db)
+        if ma and mb:
+            pair = (ma, mb, da, db)
+    elif len(metrics) >= 2:
+        pair = (metrics[0], metrics[1], None, None)
+    elif len(metrics) == 1:
+        m = store.metrics[metrics[0]]
+        cert = [p for p in store.metrics_for_term(m.glossary_term_id or "") if p.certification == "certified" and p.id != m.id]
+        if cert:
+            pair = (m.id, cert[0].id, None, None)
+    if not pair:
+        return None
+    rec = reconcile(store, *pair)
+    return {"found": True, "reconciliation": rec, "confidence": 0.9 if rec["bridge"] else 0.75,
+            "explanation": rec["summary"], "citations": [pair[0], pair[1], *(d for d in pair[2:] if d)],
+            "facts": {"summary": rec["summary"], "causes": rec["causes"], "bridge": rec["bridge"]}}
+
 
 def _owner(engine: TrustEngine, m) -> dict:
     return {"email": m.owner_email, "team": m.team,
