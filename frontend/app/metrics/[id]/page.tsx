@@ -16,6 +16,11 @@ export default function MetricDetail() {
   const lineage = useApi<Path[]>(`/metrics/${id}/lineage`);
   const [msg, setMsg] = useState<string | null>(null);
   const [owner, setOwner] = useState("");
+  const [exported, setExported] = useState<{ format: string; filename: string; content: string } | null>(null);
+
+  async function doExport(format: "dbt" | "databricks") {
+    setExported(await api<{ format: string; filename: string; content: string }>(`/metrics/${id}/export?format=${format}`));
+  }
 
   async function act(path: string, body: object = {}) {
     setMsg(null);
@@ -74,6 +79,14 @@ export default function MetricDetail() {
                 </div>
                 {msg && <p className="text-xs text-muted-foreground">{msg}</p>}
               </Card>
+              <Card className="space-y-2">
+                <CardTitle>Publish to the semantic layer</CardTitle>
+                <div className="flex gap-2">
+                  <Button variant="outline" className="flex-1" onClick={() => doExport("dbt")}>dbt MetricFlow</Button>
+                  <Button variant="outline" className="flex-1" onClick={() => doExport("databricks")}>Databricks</Button>
+                </div>
+                <a className="block text-xs text-primary" href={`/reconcile?a=${id}`}>Reconcile with another metric →</a>
+              </Card>
               <Card>
                 <CardTitle className="mb-2">Lineage</CardTitle>
                 {(lineage.data ?? []).map((p, i) => (
@@ -91,6 +104,21 @@ export default function MetricDetail() {
               </Card>
             </div>
           </div>
+
+          {exported && (
+            <Card>
+              <div className="mb-2 flex items-center justify-between">
+                <CardTitle>{exported.filename}</CardTitle>
+                <div className="flex gap-2">
+                  <Button variant="outline" className="h-8" onClick={() => navigator.clipboard.writeText(exported.content)}>Copy</Button>
+                  <a className="inline-flex h-8 items-center rounded-md border border-border px-3 text-sm" download={exported.filename}
+                    href={`data:text/plain;charset=utf-8,${encodeURIComponent(exported.content)}`}>Download</a>
+                  <Button variant="ghost" className="h-8" onClick={() => setExported(null)}>Close</Button>
+                </div>
+              </div>
+              <pre className="max-h-96 overflow-auto rounded bg-muted p-3 text-xs">{exported.content}</pre>
+            </Card>
+          )}
 
           <Card>
             <CardTitle className="mb-3">Where it is used</CardTitle>

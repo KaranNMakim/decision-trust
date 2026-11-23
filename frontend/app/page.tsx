@@ -31,6 +31,14 @@ export default function Home() {
         <Button type="submit" className="h-11">Ask</Button>
       </form>
 
+      <Card className="flex items-center justify-between border-primary/30 bg-primary/5">
+        <div>
+          <p className="font-semibold">Two dashboards showing different numbers?</p>
+          <p className="text-sm text-muted-foreground">See every reason they differ and a bridge from one number to the other.</p>
+        </div>
+        <Link href="/reconcile"><Button variant="outline">Reconcile</Button></Link>
+      </Card>
+
       {data && (
         <>
           <div className="grid gap-6 md:grid-cols-3">

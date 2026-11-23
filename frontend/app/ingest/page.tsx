@@ -12,6 +12,73 @@ const TYPES = [
   { key: "recommendation", label: "AI recommendations", cols: "rec_id, model, version, title, raw_confidence, input_features, evidence, rationale, accepted_90d, success_90d, rule_violations" },
 ];
 
+interface Extracted {
+  tool: string; source_name: string; warnings: string[];
+  metrics: { metric_id: string; name: string; formula: string; glossary_term: string; source_expression: string }[];
+  dashboards: { name: string; metrics: string; local_overrides: string }[];
+  new_conflicts?: { id: string; title: string }[];
+}
+
+function BiExtract() {
+  const [tool, setTool] = useState<"powerbi" | "tableau">("powerbi");
+  const [file, setFile] = useState<File | null>(null);
+  const [res, setRes] = useState<Extracted | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function send(commit: boolean) {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch(`${API}/extract/${tool}?commit=${commit}`, { method: "POST", body: fd, headers: { "X-User": "steward@acme.com" } });
+    const body = await r.json();
+    if (!r.ok) { setErr(body.detail ?? "Extraction failed"); return; }
+    setErr(null);
+    setRes(body);
+  }
+
+  return (
+    <Card className="space-y-3 border-primary/40">
+      <CardTitle className="text-foreground">Read definitions straight from your BI files</CardTitle>
+      <p className="text-xs text-muted-foreground">
+        Power BI: a .tmdl file or model.bim from a project folder. Tableau: a .twb or .twbx workbook. Measures, calculated
+        fields and worksheet filters become governed metrics. Try the samples in backend/data/samples.
+      </p>
+      <div className="flex flex-wrap items-center gap-3">
+        <select className="h-9 rounded-md border border-border px-2 text-sm" value={tool} onChange={(e) => setTool(e.target.value as "powerbi" | "tableau")}>
+          <option value="powerbi">Power BI (.tmdl / .bim)</option>
+          <option value="tableau">Tableau (.twb / .twbx)</option>
+        </select>
+        <input type="file" accept=".tmdl,.bim,.json,.twb,.twbx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="text-sm" />
+        <Button variant="outline" onClick={() => send(false)} disabled={!file}>Preview</Button>
+        <Button onClick={() => send(true)} disabled={!file}>Add to workspace</Button>
+      </div>
+      {err && <p className="text-xs text-red-700">{err}</p>}
+      {res && (
+        <div className="space-y-2 text-xs">
+          <p className="font-medium">{res.metrics.length} metric(s), {res.dashboards.length} dashboard(s) from {res.source_name}</p>
+          <table className="w-full">
+            <tbody>
+              {res.metrics.map((m) => (
+                <tr key={m.metric_id} className="border-t border-border align-top">
+                  <td className="py-1.5 pr-2 font-medium">{m.name}</td>
+                  <td className="py-1.5 pr-2 font-mono text-muted-foreground">{m.source_expression}</td>
+                  <td className="py-1.5 pr-2 font-mono">{m.formula}</td>
+                  <td className="py-1.5 text-muted-foreground">{m.glossary_term || "no term"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {res.dashboards.map((d) => (
+            <p key={d.name}>Dashboard <b>{d.name}</b>{d.local_overrides ? ` · filters: ${d.local_overrides.replaceAll("|", "; ")}` : ""}</p>
+          ))}
+          {res.warnings.map((w) => <p key={w} className="text-amber-700">⚠ {w}</p>)}
+          {res.new_conflicts && <p className="text-red-700">{res.new_conflicts.length} conflict(s) now open on these metrics. See the conflict queue.</p>}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function IngestPage() {
   const [result, setResult] = useState<Record<string, string>>({});
 
@@ -31,6 +98,7 @@ export default function IngestPage() {
     <div className="mx-auto max-w-4xl space-y-4">
       <h1 className="text-2xl font-semibold">Ingest metadata</h1>
       <p className="text-sm text-muted-foreground">Metadata only: no row-level data ever leaves your systems. Scores recompute after every upload.</p>
+      <BiExtract />
       {TYPES.map((t) => (
         <Card key={t.key} className="space-y-2">
           <CardTitle className="text-foreground">{t.label}</CardTitle>

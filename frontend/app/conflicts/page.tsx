@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api, useApi, type Conflict } from "@/lib/api";
 import { Button, Card, ErrorNote, SeverityBadge } from "@/components/ui";
+import { MigrationPlan } from "@/components/migration-plan";
 
 const CODES = ["", "C1", "C2", "C3", "C4", "C5"] as const;
 const CODE_LABEL: Record<string, string> = {
@@ -13,6 +14,7 @@ export default function ConflictsPage() {
   const [code, setCode] = useState<string>("");
   const { data, error, reload } = useApi<Conflict[]>(`/conflicts${code ? `?code=${code}` : ""}`);
   const [open, setOpen] = useState<string | null>(null);
+  const [planFor, setPlanFor] = useState<string | null>(null);
 
   async function patch(id: string, status: "resolved" | "dismissed") {
     await api(`/conflicts/${id}`, { method: "PATCH", body: JSON.stringify({ status, note: `Marked ${status} in UI` }) });
@@ -41,10 +43,12 @@ export default function ConflictsPage() {
                 {c.title}
               </button>
               <span className="text-xs text-muted-foreground">{c.blast_radius} dashboards</span>
+              <Button className="h-8" onClick={() => setPlanFor(planFor === c.id ? null : c.id)}>{planFor === c.id ? "Hide plan" : "Migration plan"}</Button>
               <Button variant="outline" className="h-8" onClick={() => patch(c.id, "resolved")}>Resolve</Button>
               <Button variant="ghost" className="h-8" onClick={() => patch(c.id, "dismissed")}>Dismiss</Button>
             </div>
             {open === c.id && <ConflictDetail c={c} />}
+            {planFor === c.id && <MigrationPlan conflictId={c.id} onChanged={reload} />}
           </Card>
         ))}
         {data?.length === 0 && <p className="text-sm text-muted-foreground">No open conflicts.</p>}

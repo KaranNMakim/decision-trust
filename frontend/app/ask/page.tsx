@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { api, type Component } from "@/lib/api";
 import type { Zone } from "@/lib/utils";
 import { Button, Card, CardTitle, CertBadge, ComponentBars, ErrorNote, Input, ScorePill, ScoreRing } from "@/components/ui";
+import { ReconcileView, type Reconciliation } from "@/components/reconcile-view";
 
 interface Owner { name: string | null; email: string | null; team: string | null }
 interface Rival { metric_id: string; name: string; formula: string; trust_score: number; zone: Zone; difference: string; used_in: number; owner: Owner }
@@ -23,12 +24,14 @@ interface AskResponse {
   score?: { name: string; score: number; zone: Zone; components: Component[]; explanation: string };
   conflicts_found?: { id: string; title: string; severity: string; blast_radius: number }[];
   recommendations?: { entity_id: string; name: string; score: number; zone: Zone }[];
+  reconciliation?: Reconciliation;
   citations: string[];
   latency_ms: number;
 }
 
 const SUGGESTIONS = [
   "Which revenue metric should I trust?",
+  "Why does Sales QBR revenue differ from the Board Pack?",
   "Which gross margin should go in the board pack?",
   "Why is Revenue (Sales) so low?",
   "Can we trust recommendation r2?",
@@ -123,6 +126,8 @@ function Answer({ res }: { res: AskResponse }) {
           </table>
         </Card>
       )}
+
+      {res.reconciliation && <ReconcileView rec={res.reconciliation} />}
 
       {res.score && (
         <Card>
